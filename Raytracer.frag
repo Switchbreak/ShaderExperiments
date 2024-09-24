@@ -18,7 +18,7 @@ struct sphere {
     vec4 diffuse;
 };
 
-const sphere[] spheres = sphere[](
+const sphere[] spheres = sphere[] (
     sphere(vec3(0, -5, 0), 5.0, vec4(0)),
     sphere(vec3(-6, -8, -2), 2.0, vec4(0, 1, 1, 1)),
     sphere(vec3(2, -7.5, 10), 2.5, vec4(1, 0, 1, 1))
@@ -26,7 +26,8 @@ const sphere[] spheres = sphere[](
 
 // Point light source
 const vec3  light   = vec3(5, 10, -10);
-const float ambient = 0.01;
+const float AMBIENT = 0.01;
+const float AMBIENT_REFLECT = 0.5;
 
 // Sky color is blue
 // Plane texture is a two-color checkerboard pattern of black and white
@@ -34,8 +35,10 @@ const vec4 skyColor    = vec4(0, 0, 1, 1);
 const vec4 planeColor1 = vec4(1, 1, 1, 1);
 const vec4 planeColor2 = vec4(0.5, 0.5, 0.5, 1);
 
-bool sphereCollide(vec3 rayOrigin, vec3 rayDirection, vec3 sphereOrigin, float radius2, out float t, out vec3 normal)
+bool sphereCollide(vec3 rayOrigin, vec3 rayDirection, vec3 sphereOrigin, float radius2, float prevT, out float t, out vec3 normal)
 {
+    t = prevT;
+
     // Check for collision between ray and sphere
     float t1 = dot(sphereOrigin - rayOrigin, rayDirection - rayOrigin);
     // Closest point to sphere along ray lies in front of the camera if t1 > 0
@@ -66,14 +69,17 @@ bool sphereCollide(vec3 rayOrigin, vec3 rayDirection, vec3 sphereOrigin, float r
     return false;
 }
 
-bool spheresCollide(vec3 rayOrigin, vec3 rayDirection, out float t, out vec3 normal, out vec4 diffuse)
+bool spheresCollide(vec3 rayOrigin, vec3 rayDirection, float prevT, out float t, out vec3 normal, out vec4 diffuse)
 {
     bool collision = false;
+    t = prevT;
 
     for(int i = 0; i < spheres.length(); i++)
     {
-        if (sphereCollide(rayOrigin, rayDirection, spheres[i].Sp0, spheres[i].Sr * spheres[i].Sr, t, normal))
+        vec3 sphereNormal;
+        if (sphereCollide(rayOrigin, rayDirection, spheres[i].Sp0, spheres[i].Sr * spheres[i].Sr, t, t, sphereNormal))
         {
+            normal = sphereNormal;
             collision = true;
             diffuse = spheres[i].diffuse;
         }
@@ -82,8 +88,9 @@ bool spheresCollide(vec3 rayOrigin, vec3 rayDirection, out float t, out vec3 nor
     return collision;
 }
 
-bool planeCollide(vec3 rayOrigin, vec3 rayDirection, vec3 planeOrigin, vec3 normal, out float t)
+bool planeCollide(vec3 rayOrigin, vec3 rayDirection, vec3 planeOrigin, vec3 normal, float prevT, out float t)
 {
+    t = prevT;
     float denom = dot(normal, rayDirection - rayOrigin);
     if (denom < EPSILON)
     {
@@ -112,14 +119,14 @@ bool rayCollide(vec3 origin, vec3 direction, out float t, out vec3 normal, out v
     t = MAX_DISTANCE;
     bool collision = false;
     
-    if (spheresCollide(origin, direction, t, normal, diffuse))
+    if (spheresCollide(origin, direction, t, t, normal, diffuse))
     {
         collision = true;
     }
-    if (planeCollide(origin, direction, Pp0, Pn, t))
+    if (planeCollide(origin, direction, Pp0, Pn, t, t))
     {
         collision = true;
-        normal = Pn;
+        normal = Pn;        
         diffuse = planeTexture(Pp0, Pn, Pv1, Pv2, (direction - origin) * t + origin);
     }
     
@@ -133,8 +140,10 @@ vec3 mouseOrbitCamera()
     return vec3(drag.y * 2.0, -drag.x * 5.0, 0.0);
 }
 
-vec3 rayFromCamera(vec2 fragCoord, out vec3 camPos, vec3 camRot)
+vec3 rayFromCamera(vec2 fragCoord, vec3 prevCamPos, out vec3 camPos, vec3 camRot)
 {
+    camPos = prevCamPos;
+
     // View frustum is defined as width and height of the view screen in
     // world-space units, with z representing distance from the camera position
     vec3 frustum = vec3(normalize(iResolution.xy), 1.0);
@@ -142,7 +151,7 @@ vec3 rayFromCamera(vec2 fragCoord, out vec3 camPos, vec3 camRot)
     // Convert screen-space pixel coordinate to view-space frustum coordinates
     vec2 ss = (fragCoord / iResolution.xy - 0.5) * frustum.xy;
     vec3 ray = normalize(vec3(ss.xy, frustum.z));
-    
+
     mat4 transform = mat4(1.0);
     if (abs(camRot.x) > EPSILON)
     {
@@ -200,10 +209,10 @@ bool shadowed(vec3 point, vec3 normal)
 
     float t = MAX_DISTANCE;
     vec4 diffuse = vec4(1);
-    return spheresCollide(point, ray, t, normal, diffuse);
+    return spheresCollide(point, ray, t, t, normal, diffuse);
 }
 
-vec4 lightPoint(vec3 point, vec3 normal, vec4 diffuse)
+vec4 lightPoint(vec3 point, vec3 normal, vec4 diffuse, float ambient)
 {
     if (!shadowed(point, normal))
     {
@@ -221,7 +230,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     vec3 camPos = vec3(0, 0, -50);
     vec3 camRot = mouseOrbitCamera();
     
-    vec3 ray = rayFromCamera(fragCoord, camPos, camRot);
+    vec3 ray = rayFromCamera(fragCoord, camPos, camPos, camRot);
     
     float t;
     vec3 normal;
@@ -235,16 +244,18 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
         // Diffuse color of 0 indicates a reflective surface
         if (diffuse == vec4(0))
         {
-            diffuse = skyColor;
             vec3 reflection = reflect(ray - camPos, normal);
             
-            rayCollide(p, reflection + p, t, normal, diffuse);
+            vec3 reflectionNormal;
+            if (!rayCollide(p, reflection + p, t, reflectionNormal, diffuse))
+                diffuse = skyColor;
             
-            outColor = lightPoint(t * reflection + p, normal, diffuse);
+            vec4 reflectionColor = lightPoint(t * reflection + p, reflectionNormal, diffuse, AMBIENT);
+            outColor = lightPoint(p, normal, reflectionColor, AMBIENT_REFLECT);
         }
         else
         {
-            outColor = lightPoint(p, normal, diffuse);
+            outColor = lightPoint(p, normal, diffuse, AMBIENT);
         }
     }
     else
